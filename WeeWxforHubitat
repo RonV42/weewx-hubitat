@@ -1,0 +1,190 @@
+/*
+* WeeWX MQTT WeatherFlow
+*
+* Description:
+* This Hubitat driver listens to the MQTT topic from WeeWx.  Coded to WeatherFlow Tempest values from the "Loop"
+* 
+*  The hardware/software linkage looks like this:
+*
+*  Tempest -->  WeatherFlow Wifi Hub --> UDP Broadcasts -->  WeeWx Tempest Driver --> WeeWx MQTT Driver --> MQTT Topic: weather/loop
+* 
+* Version Control:
+* 0.01 - Initial version
+* 
+*/
+
+metadata {
+	definition(name: "WeeWx MQTT driver for WeatherFlow Tempest", namespace: "RonV42", author: "Ron Vargo") {
+		capability "Initialize"
+		capability "Sensor"
+
+		attribute "outTemp_F", "Number"
+		attribute "outHumidity", "Number"
+        // attribute "pressure_inHg", "Number"
+        attribute "barometer_inHg", "Number"
+        attribute "illuminance_lux", "Number"
+        attribute "outTempBatteryStatus", "Number"
+	}
+		
+	preferences {
+
+
+		input name: "MQTTBroker", type: "text", title: "MQTT Broker Address:", required: true, displayDuringSetup: true
+		input name: "username", type: "text", title: "MQTT Username:", description: "(blank if none)", required: false, displayDuringSetup: true
+		input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false, displayDuringSetup: true
+		input name: "topicSub", type: "text", title: "Topic to Subscribe:", description: "Example Topic ( weather/loop)", required: false, displayDuringSetup: true
+   
+		input("logEnable", "bool", title: "Enable logging", required: true, defaultValue: true)
+	}
+}
+
+def installed() {
+	log.info "installed..."
+}
+
+def updated() {
+	if (logEnable) log.info "Updated..."
+	initialize()
+}
+
+def uninstalled() {
+	if (logEnable) log.info "Disconnecting from mqtt"
+	interfaces.mqtt.disconnect()
+}
+
+def initialize() {
+	
+	
+	displayDebugLog("initialize")
+
+	if (logEnable) runIn(900, logsOff)
+
+	state.ThisCharge = 0
+	state.ChargeLimit = 0
+	state.Relay = -1
+
+	MQTTconnect()
+	
+	unschedule()
+	
+	schedule("0/10 * * * * ? *", MQTTconnect)
+	
+
+}
+
+// Parse incoming device messages to generate events
+def parse(String description) {
+
+
+	try {
+
+		displayDebugLog("Parse")
+		displayDebugLog(description);
+		displayDebugLog(did);
+		
+		did = device.getId()
+
+		state.DeviceID = did
+		
+		// parse message
+		mqtt = interfaces.mqtt.parseMessage(description)
+
+		if (logEnable) log.debug mqtt.topic
+		if (logEnable) log.debug mqtt.payload
+
+		state.topic = mqtt.topic
+
+		json = new groovy.json.JsonSlurper().parseText(mqtt.payload)
+        
+        displayDebugLog("json object")
+        if (logEnable) log.debug json
+        
+        // There are 3 types of observations records, Wind, 1 minute, 5 mintue WeeWx Archive
+        // This statement is needed to key the 1 minute observation
+        if (json.illuminance_lux && !interval_minute) {
+            if (logEnable) log.debug json.outTemp_F
+            if (logEnable) log.debug json.outHumidity
+            // if (logEnable) log.debug json.pressure_inHg
+            if (logEnable) log.debug json.barometer_inHg
+            if (logEnable) log.debug json.illuminance_lux
+            if (logEnable) log.debug json.outTempBatteryStatus
+            
+            sendEvent(name: "outTemp_F", value: Float.parseFloat(json.outTemp_F).round(1))
+            
+            sendEvent(name: "outHumidity", value: Float.parseFloat(json.outHumidity).round(0))
+
+            // sendEvent(name: "pressure_inHg", value: Float.parseFloat(json.pressure_inHg).round(3))
+            
+            sendEvent(name: "barometer_inHg", value: Float.parseFloat(json.barometer_inHg).round(3))
+            
+            sendEvent(name: "illuminance_lux", value: Float.parseFloat(json.illuminance_lux).round(0))
+            
+            sendEvent(name: "outTempBatteryStatus", value: Float.parseFloat(json.outTempBatteryStatus).round(2))
+            
+        }
+        
+                      
+                      
+        }
+    
+	catch (Exception e) 
+	{
+		log.error "Parse error: ${e.message}"
+	}
+
+}
+
+def MQTTconnect() {
+
+	try {
+
+		def mqttInt = interfaces.mqtt
+
+		if (mqttInt.isConnected()) {
+			displayDebugLog( "Allready Connected to: $MQTTBroker $topicSub")
+			return
+		}
+
+		def clientID = "hubitat-" + device.deviceNetworkId
+		state.clientID = clientID
+		
+		 displayDebugLog( "Allready Connected to: $MQTTBroker $settings?.MQTTBroker/$settings?.topicSub")
+
+		//open connection
+		mqttbroker = "tcp://" + settings?.MQTTBroker + ":1883"
+		mqttInt.connect(mqttbroker, clientID, settings?.username, settings?.password)
+
+		//give it a chance to start
+		pauseExecution(500)
+
+		mqttInt.subscribe(settings?.topicSub)
+
+		log.info "Connection established: $MQTTBroker $topicSub"
+		log.info "clientID: $clientID"
+		log.info "Subscribed to: $topicSub"
+
+
+	} catch (e) {
+		log.error "MQTTconnect error: ${e.message}"
+	}
+} 
+
+def mqttClientStatus(String status) {
+	log.error "MQTTStatus- error: ${status}"
+}
+
+
+def logsOff() {
+	log.warn "Debug logging disabled."
+	device.updateSetting("logEnable", [value: "false", type: "bool"])
+}
+
+private def displayDebugLog(message) {
+	if (logEnable) log.debug "${device.displayName}: ${message}"
+}
+
+private def displayInfoLog(message) {
+
+	log.info "${device.displayName}: ${message}"
+}
+
